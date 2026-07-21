@@ -1660,7 +1660,7 @@ void main()
 	rotina_lcd_escreve ("Zerando balanca ");
 	rotina_posiciona_lcd ();
 	rotina_lcd_escreve (" Nao toque peso ");
-	rotina_delay ();
+	rotina_delay_2s ();
 	valor_zero = ler_adc_filtrado ();									// zero inicial filtrado, mantido somente em RAM
 	if (botao_esquerda) rotina_calibracao();
 	if (botao_direita) rotina_balanca();                                    
