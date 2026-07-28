@@ -17,6 +17,7 @@
 #define EEPROM_ADDR_ANO 255
 #define USB_PACKET_SIZE 8
 #define USB_TOTAL_PACKETS 32
+#define USB_TX_TIMEOUT_MS 1000
 #define CAL_PADRAO_GRAMAS_POR_BIT 3
 
 #DEFINE USB_HID_DEVICE  TRUE // Si usar HID 
@@ -1265,10 +1266,31 @@ void rotina_limpar_memoria ()
 	goto label_rotina_limpar_memoria;
 
 }
+
+int usb_aguardar_tx_livre (void)
+{
+	long int timeout_ms = 0;
+
+	while (!usb_tbe (1))
+	{
+		restart_wdt ();
+		usb_task ();
+
+		if (pino_usb_conectado == 0 || botao_retorna) return FALSE;
+
+		delay_ms (1);
+		timeout_ms++;
+		if (timeout_ms >= USB_TX_TIMEOUT_MS) return FALSE;
+	}
+
+	return TRUE;
+}
+
 void rotina_upload ()
 {
 	int contador = 0;
 	int pacote = 0;
+	int bytes_recebidos = 0;
 	int in_data [USB_PACKET_SIZE] = {0};	
 	int out_data [USB_PACKET_SIZE] = {0};
 				
@@ -1283,7 +1305,6 @@ void rotina_upload ()
 		if (botao_retorna) return;
 	}
 	usb_init ();
-	usb_attach ();
 	rotina_apaga_lcd (); 
 	rotina_lcd_escreve (" USB conectado! ");
 	while (botao_retorna == 0 && pino_usb_conectado == 1)
@@ -1294,31 +1315,59 @@ void rotina_upload ()
 		{
 			if (usb_kbhit(1)) 
 			{
-				usb_get_packet(1,in_data,USB_PACKET_SIZE);
-				if (in_data[0] == 0)
+				bytes_recebidos = usb_get_packet(1,in_data,USB_PACKET_SIZE);
+				if (bytes_recebidos > 0 && in_data[0] == 0)
 				{
 					usb_detach ();
 					return;
 				}
-				else
+				else if (bytes_recebidos > 0)
 				{ 
 					pacote = 0;
 					while (pacote < USB_TOTAL_PACKETS && pino_usb_conectado == 1)
 					{
 						restart_wdt ();
 						usb_task ();
+						if (!usb_aguardar_tx_livre ())
+						{
+							rotina_apaga_lcd ();
+							rotina_lcd_escreve (" Falha no envio ");
+							rotina_posiciona_lcd ();
+							rotina_lcd_escreve (" Verifique USB  ");
+							rotina_delay_2s ();
+							usb_detach ();
+							return;
+						}
 						for (contador = 0; contador < USB_PACKET_SIZE; contador++)
 						{
 							restart_wdt ();
 							out_data[contador] = read_eeprom((pacote * USB_PACKET_SIZE) + contador);
 						}
-						usb_put_packet(1,out_data,USB_PACKET_SIZE,USB_DTS_TOGGLE);
-						delay_ms(50);												//com 10ms nao funcionou
+						if (!usb_put_packet(1,out_data,USB_PACKET_SIZE,USB_DTS_TOGGLE))
+						{
+							rotina_apaga_lcd ();
+							rotina_lcd_escreve (" Falha no envio ");
+							rotina_posiciona_lcd ();
+							rotina_lcd_escreve (" Verifique USB  ");
+							rotina_delay_2s ();
+							usb_detach ();
+							return;
+						}
 						pacote++;
 					}
 					pacote = 0;
 					if (pino_usb_conectado == 0)
 					{
+						usb_detach ();
+						return;
+					}
+					if (!usb_aguardar_tx_livre ())
+					{
+						rotina_apaga_lcd ();
+						rotina_lcd_escreve (" Falha no envio ");
+						rotina_posiciona_lcd ();
+						rotina_lcd_escreve (" Verifique USB  ");
+						rotina_delay_2s ();
 						usb_detach ();
 						return;
 					}
