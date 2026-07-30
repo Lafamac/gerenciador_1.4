@@ -19,3 +19,7 @@
 *.zip
 *.tmp
 ~$*
+
+# PC application build directories
+pc_app/**/bin/
+pc_app/**/obj/

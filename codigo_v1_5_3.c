@@ -18,6 +18,11 @@
 #define USB_PACKET_SIZE 8
 #define USB_TOTAL_PACKETS 32
 #define USB_TX_TIMEOUT_MS 1000
+#define USB_POWER_TIMEOUT_TICKS 50000
+#define USB_ENUM_TIMEOUT_TICKS 100000
+#define USB_CMD_DESCONECTAR 0
+#define USB_CMD_DOWNLOAD_LEGADO 1
+#define USB_CMD_DOWNLOAD_CHECKSUM 2
 #define CAL_PADRAO_GRAMAS_POR_BIT 3
 
 #DEFINE USB_HID_DEVICE  TRUE // Si usar HID 
@@ -35,13 +40,13 @@
 #bit botao_confirma = porta.3
 #bit botao_direita = porta.4
 #bit pino_usb_conectado = porta.5
-#include <mod_lcd.c>
+#include "mod_lcd.c"
 //#include <usb_biblioteca.h>
+#include "usb_desc_hid.h"                    //Forca o descritor local de 10 ms.
 #include <pic18_usb.h>     								 //Funciones de bajo nivel(hardware) para la serie PIC 18Fxx5x que serviran en usb.c
-#include <usb_desc_hid.h>							    //Aqui es donde van las descripciones de este dispositivo (como lo reconocera windows)
 #include <usb.c>           								 //libreria para el manejo del usb
-#build(reset=0x1100, interrupt=0x1108)					// Bootloader: remover somente ao gravar por programador sem bootloader.
-#org 0x000, 0x10ff { }
+//#build(reset=0x1100, interrupt=0x1108)					// Usar somente quando o bootloader estiver gravado.
+//#org 0x000, 0x10ff { }                              // PICkit 3: vetores nativos em 0x0000 e 0x0008.
 
 int botao_pressionado;
 long int valor_zero;
@@ -110,6 +115,16 @@ void rotina_delay_2s ()
 {
    int i;
    for (i = 0; i < 20; i++)
+   {
+      delay_ms (100);
+      restart_wdt ();
+   }
+}
+
+void rotina_delay_1s ()
+{
+   int i;
+   for (i = 0; i < 10; i++)
    {
       delay_ms (100);
       restart_wdt ();
@@ -390,8 +405,7 @@ void rotina_conversao ()
 	diferenca = (signed long int) valor_lido - (signed long int) valor_zero;
 	if (diferenca <= ADC_DEADBAND) valor_gramas = 0;
 	else valor_gramas = (long int) (diferenca * CAL_PADRAO_GRAMAS_POR_BIT);
-	//valor_gramas = (valor_lido - valor_zero)*25/8;						//essa parte do programa eh extremamente importante para um correto funcionamento. Para que essa conversao seja exata deve-se calibrar o potenciometro do amplificador de instrumentacao de modo que ele gere um diferenca de potencial de 3,128V entre uma peesagem de 0Kg e outra de 2Kg, isto é se para 0Kg temos por exemplo 0,91V sera necessario que para 2Kg tenhamos 4,038V. Logo se idealmente temos que 0Kg corresponde a 0V, esta balanca mede até 3,196Kg
-	//valor_gramas = (valor_lido - valor_zero)*50/18 + 200;					//essa parte do programa eh extremamente importante para um correto funcionamento. Para que essa conversao seja exata deve-se calibrar o potenciometro do amplificador de instrumentacao de modo que ele gere um diferenca de potencial de 3,4V entre uma peesagem de 0.3Kg e outra de 2Kg, isto é se para 0.3Kg temos por exemplo 0,75V sera necessario que para 2Kg tenhamos 4,15V. Logo se idealmente temos que 0Kg corresponde a 0V, esta balanca mede até 2,941Kg
+	// Conversoes antigas mantidas apenas como referencia de calibracao.
 }
 
 long int rotina_sensor (long int valor_maior[5], int contador)
@@ -912,7 +926,7 @@ void rotina_plantacao_produtividade ()
 	{
 		if (valor_renda == 0) valor_produtividade = 0;
 		else valor_produtividade = ((valor_plantas_ha * 5)/ valor_renda) * valor_carga_pendente / 50;		//se ainda nao houve uma correcao desse valor procede-se com o calculo
-		if (valor_produtividade > 255) valor_produtividade = 255;												//esse calculo acima realizado permite obter valores de produtividade de ate 1149. Como nossa variavel é um INT limitei aqui seu valor a 255 uma vez que nao teremos na pratica valores superiores a 255
+		if (valor_produtividade > 255) valor_produtividade = 255;												//limita o resultado ao intervalo da variavel
 	}
 	rotina_display_produtividade ();
 	rotina_seta_esquerda ();
@@ -1274,16 +1288,59 @@ int usb_aguardar_tx_livre (void)
 	while (!usb_tbe (1))
 	{
 		restart_wdt ();
-		usb_task ();
-
-		if (pino_usb_conectado == 0 || botao_retorna) return FALSE;
-
 		delay_ms (1);
 		timeout_ms++;
+
 		if (timeout_ms >= USB_TX_TIMEOUT_MS) return FALSE;
 	}
 
 	return TRUE;
+}
+
+int usb_init_wdt_timeout (void)
+{
+	long int timeout = 0;
+
+	usb_detach ();
+
+	// Mantem a desconexao visivel ao host antes de religar o transceptor.
+	for (timeout = 0; timeout < 50; timeout++)
+	{
+		delay_ms (10);
+		restart_wdt ();
+	}
+
+	timeout = 0;
+
+	while (usb_state != USB_STATE_POWERED && timeout < USB_POWER_TIMEOUT_TICKS)
+	{
+		restart_wdt ();
+		usb_task ();
+		delay_us (100);
+		timeout++;
+
+		if (botao_retorna)
+		{
+			delay_ms (30);
+			if (botao_retorna)
+			{
+				while (botao_retorna) restart_wdt ();
+				return FALSE;
+			}
+		}
+	}
+
+	return usb_state == USB_STATE_POWERED;
+}
+
+void rotina_upload_falha ()
+{
+	rotina_apaga_lcd ();
+	rotina_lcd_escreve (" Falha no envio ");
+	rotina_posiciona_lcd ();
+	rotina_lcd_escreve (" Verifique USB  ");
+	rotina_delay_2s ();
+	usb_detach ();
 }
 
 void rotina_upload ()
@@ -1291,12 +1348,15 @@ void rotina_upload ()
 	int contador = 0;
 	int pacote = 0;
 	int bytes_recebidos = 0;
+	int modo_checksum = FALSE;
+	long int addr = 0;
+	int32 enum_timeout = 0;
 	int in_data [USB_PACKET_SIZE] = {0};	
 	int out_data [USB_PACKET_SIZE] = {0};
 				
 	rotina_apaga_lcd (); 
 	rotina_lcd_escreve (" Conecte o USB  ");
-    rotina_posiciona_lcd ();
+	rotina_posiciona_lcd ();
 	rotina_lcd_escreve (" ao computador! ");	
 	
 	while (pino_usb_conectado == 0)
@@ -1304,10 +1364,49 @@ void rotina_upload ()
 		restart_wdt ();
 		if (botao_retorna) return;
 	}
-	usb_init ();
+	rotina_apaga_lcd ();
+	rotina_lcd_escreve (" Conectando USB ");
+	rotina_posiciona_lcd ();
+	rotina_lcd_escreve ("    Aguarde...   ");
+	if (!usb_init_wdt_timeout ())
+	{
+		rotina_apaga_lcd ();
+		rotina_lcd_escreve ("USB nao reconhec.");
+		rotina_posiciona_lcd ();
+		rotina_lcd_escreve ("Verifique o cabo ");
+		rotina_delay_2s ();
+		usb_detach ();
+		return;
+	}
+
+	while (!usb_enumerated () && enum_timeout < USB_ENUM_TIMEOUT_TICKS)
+	{
+		restart_wdt ();
+		usb_task ();
+		delay_us (100);
+		enum_timeout++;
+
+		if (botao_retorna)
+		{
+			usb_detach ();
+			return;
+		}
+	}
+
+	if (!usb_enumerated ())
+	{
+		rotina_apaga_lcd ();
+		rotina_lcd_escreve ("USB nao reconhec.");
+		rotina_posiciona_lcd ();
+		rotina_lcd_escreve ("Verifique o cabo ");
+		rotina_delay_2s ();
+		usb_detach ();
+		return;
+	}
+
 	rotina_apaga_lcd (); 
 	rotina_lcd_escreve (" USB conectado! ");
-	while (botao_retorna == 0 && pino_usb_conectado == 1)
+	while (botao_retorna == 0)
 	{
 		restart_wdt ();
 		usb_task ();
@@ -1316,59 +1415,54 @@ void rotina_upload ()
 			if (usb_kbhit(1)) 
 			{
 				bytes_recebidos = usb_get_packet(1,in_data,USB_PACKET_SIZE);
-				if (bytes_recebidos > 0 && in_data[0] == 0)
+				if (bytes_recebidos == 0) continue;
+
+				if (in_data[0] == USB_CMD_DESCONECTAR)
 				{
+					rotina_delay_1s ();
 					usb_detach ();
 					return;
 				}
-				else if (bytes_recebidos > 0)
+				else
 				{ 
+					modo_checksum = (in_data[0] == USB_CMD_DOWNLOAD_CHECKSUM);
 					pacote = 0;
-					while (pacote < USB_TOTAL_PACKETS && pino_usb_conectado == 1)
+					while (pacote < USB_TOTAL_PACKETS)
 					{
 						restart_wdt ();
-						usb_task ();
 						if (!usb_aguardar_tx_livre ())
 						{
-							rotina_apaga_lcd ();
-							rotina_lcd_escreve (" Falha no envio ");
-							rotina_posiciona_lcd ();
-							rotina_lcd_escreve (" Verifique USB  ");
-							rotina_delay_2s ();
-							usb_detach ();
+							rotina_upload_falha ();
 							return;
 						}
+
 						for (contador = 0; contador < USB_PACKET_SIZE; contador++)
 						{
-							restart_wdt ();
-							out_data[contador] = read_eeprom((pacote * USB_PACKET_SIZE) + contador);
+							addr = ((long int) pacote * USB_PACKET_SIZE) + contador;
+							if (addr == EEPROM_ADDR_CHECKSUM && !modo_checksum)
+							{
+								out_data[contador] = 0xFF;
+							}
+							else
+							{
+								out_data[contador] = read_eeprom(addr);
+							}
 						}
+
 						if (!usb_put_packet(1,out_data,USB_PACKET_SIZE,USB_DTS_TOGGLE))
 						{
-							rotina_apaga_lcd ();
-							rotina_lcd_escreve (" Falha no envio ");
-							rotina_posiciona_lcd ();
-							rotina_lcd_escreve (" Verifique USB  ");
-							rotina_delay_2s ();
-							usb_detach ();
+							rotina_upload_falha ();
 							return;
 						}
+
 						pacote++;
+						delay_ms (50);
+						restart_wdt ();
 					}
 					pacote = 0;
-					if (pino_usb_conectado == 0)
-					{
-						usb_detach ();
-						return;
-					}
 					if (!usb_aguardar_tx_livre ())
 					{
-						rotina_apaga_lcd ();
-						rotina_lcd_escreve (" Falha no envio ");
-						rotina_posiciona_lcd ();
-						rotina_lcd_escreve (" Verifique USB  ");
-						rotina_delay_2s ();
-						usb_detach ();
+						rotina_upload_falha ();
 						return;
 					}
 					rotina_apaga_lcd ();

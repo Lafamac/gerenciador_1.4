@@ -1,0 +1,19 @@
+[PROJECT]
+Target=codigo_v1_5_3.hex
+Processor_Text=PIC18F2550
+CCSVersion=5.007
+Compiler=PCH
+[Target Data]
+FileList=codigo_v1_5_3.c
+[Directories]
+Include=C:\gerenciador_1.4\Versão 1.4\;C:\PROGRA~2\PICC\devices\;C:\PROGRA~2\PICC\drivers\
+[codigo_v1_5_3.c]
+Type=4
+[mru-list]
+1=codigo_v1_5_3.c
+[Opened Files]
+1=codigo_v1_5_3.c
+2=
+[Units]
+Count=1
+1=codigo_v1_5_3 (main)

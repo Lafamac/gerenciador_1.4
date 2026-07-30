@@ -157,7 +157,7 @@
          0x81, //endpoint number and direction (0x81 = EP1 IN)       ==30
          0x03, //transfer type supported (0x03 is interrupt)         ==31
          USB_EP1_TX_SIZE,0x00, //maximum packet size supported                  ==32,33
-         250,  //polling interval, in ms.  (cant be smaller than 10)      ==34
+         10,  //polling interval, in ms.                                 ==34
 
    //endpoint descriptor
          USB_DESC_ENDPOINT_LEN, //length of descriptor                   ==35
